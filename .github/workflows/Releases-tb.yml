@@ -1,62 +1,26 @@
-- name: Releases同步
+- name: Releases 同步
+
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     SOURCE_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
   run: |
-    set -e  # 出错时退出
     SOURCE_REPO="OpenListTeam/OpenList"
     
     if [ -n "$SOURCE_TOKEN" ]; then
       export GH_TOKEN="$SOURCE_TOKEN"
     fi
     
-    # 创建临时目录
-    WORK_DIR=$(mktemp -d)
-    cd "$WORK_DIR"
+    # 修复：不使用管道，直接输出到文件
+    gh api \
+      -H "Accept: application/vnd.github.v3+json" \
+      "/repos/${SOURCE_REPO}/releases" \
+      --paginate > raw_releases.json
     
-    # 获取所有 releases
-    echo "正在获取 releases..."
-    if ! gh api "/repos/${SOURCE_REPO}/releases" --paginate > all_releases.json; then
-      echo "❌ 获取 releases 失败"
+    # 单独使用 jq 处理文件
+    if [ -s raw_releases.json ]; then
+      jq 'sort_by(.published_at) | .[] | {tag_name: .tag_name, body: .body, assets: .assets}' raw_releases.json > releases.json
+      rm raw_releases.json
+    else
+      echo "没有获取到任何 Releases"
       exit 1
     fi
-    
-    # 检查文件大小
-    if [ ! -s all_releases.json ]; then
-      echo "❌ releases.json 为空"
-      exit 1
-    fi
-    
-    # 验证 JSON 格式
-    if ! jq empty all_releases.json 2>/dev/null; then
-      echo "❌ 无效的 JSON 格式"
-      cat all_releases.json | head -500
-      exit 1
-    fi
-    
-    # 处理数据
-    echo "处理 releases 数据..."
-    jq -r '
-      sort_by(.published_at) | 
-      .[] | 
-      {
-        tag_name: .tag_name,
-        published_at: .published_at,
-        body: (.body // ""),
-        assets: [.assets[]? | {name: .name, url: .browser_download_url}]
-      } | 
-      @json
-    ' all_releases.json > processed_releases.json
-    
-    # 统计
-    COUNT=$(wc -l < processed_releases.json)
-    echo "✅ 成功处理 $COUNT 个 releases"
-    
-    # 复制回工作目录
-    cp processed_releases.json "$GITHUB_WORKSPACE/releases.json"
-    
-    # 清理
-    cd /
-    rm -rf "$WORK_DIR"
-    
-    echo "releases_count=$COUNT" >> $GITHUB_OUTPUT
